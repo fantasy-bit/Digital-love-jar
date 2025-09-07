@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A Digital Love Jar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        setLogLevel('debug');
+
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const appContainer = document.getElementById('app-container');
+        
+        let messages = {
+            reasons: [],
+            sad: [],
+            missme: []
+        };
+
+        const viewMode = document.getElementById('view-mode');
+        const editMode = document.getElementById('edit-mode');
+        const messageDisplay = document.getElementById('message-display');
+        const messageTextarea = document.getElementById('message-textarea');
+        const categorySelect = document.getElementById('category-select');
+        const addMessageButton = document.getElementById('add-message-button');
+        const moodButtons = document.getElementById('mood-buttons');
+        const toggleViewButton = document.getElementById('toggle-view-btn');
+        const messageModal = document.getElementById('message-modal');
+        const messageModalText = document.getElementById('message-modal-text');
+        const messageModalClose = document.getElementById('message-modal-close');
+        const editModeInfo = document.getElementById('edit-mode-info');
+        const userIdDisplay = document.getElementById('user-id');
+        const toggleEditBtn = document.getElementById('toggle-edit-btn');
+        const editMessageList = document.getElementById('edit-message-list');
+        
+        // ==========================================================
+        //  CONFIGURATION FOR EDIT MODE
+        //  - Access edit mode by adding `?edit=true` to the URL.
+        // ==========================================================
+        
+        const isEditMode = new URLSearchParams(window.location.search).get('edit') === 'true';
+
+        if (isEditMode) {
+            viewMode.classList.add('hidden');
+            editMode.classList.remove('hidden');
+            editModeInfo.classList.remove('hidden');
+            toggleViewButton.classList.remove('hidden');
+            
+        } else {
+            editMode.classList.add('hidden');
+            viewMode.classList.remove('hidden');
+            toggleViewButton.classList.add('hidden');
+        }
+
+        function showMessageModal(message) {
+            messageModalText.textContent = message;
+            messageModal.classList.remove('hidden');
+            messageModal.classList.add('flex');
+        }
+
+        function showAlert(message) {
+            showMessageModal(message);
+        }
+
+        messageModalClose.addEventListener('click', () => {
+            messageModal.classList.add('hidden');
+        });
+
+        function renderEditMessages() {
+            editMessageList.innerHTML = '';
+            for (const category in messages) {
+                if (messages[category].length > 0) {
+                    const categoryHeader = document.createElement('h3');
+                    categoryHeader.className = 'text-xl font-semibold mt-6 mb-2 text-purple-700';
+                    categoryHeader.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+                    editMessageList.appendChild(categoryHeader);
+
+                    messages[category].forEach((msg, index) => {
+                        const messageItem = document.createElement('div');
+                        messageItem.className = 'flex justify-between items-center bg-gray-100 p-3 rounded-md mb-2';
+                        messageItem.innerHTML = `
+                            <p class="text-gray-700 text-sm">${msg}</p>
+                            <button class="remove-message-btn text-red-500 hover:text-red-700 font-bold" data-category="${category}" data-index="${index}">
+                                &times;
+                            </button>
+                        `;
+                        editMessageList.appendChild(messageItem);
+                    });
+                }
+            }
+        }
+        
+        async function saveMessage(db, userId, category, message) {
+            const messageDocRef = doc(db, 'artifacts', appId, 'users', userId, 'messages', 'mood-messages');
+            const newMessages = { ...messages };
+            if (!newMessages[category]) newMessages[category] = [];
+            newMessages[category].push(message);
+
+            await setDoc(messageDocRef, newMessages, { merge: true });
+        }
+
+        async function removeMessage(db, userId, category, index) {
+            const messageDocRef = doc(db, 'artifacts', appId, 'users', userId, 'messages', 'mood-messages');
+            const newMessages = { ...messages };
+            newMessages[category].splice(index, 1);
+            await setDoc(messageDocRef, newMessages);
+        }
+
+        function showRandomMessage(category) {
+            const messageList = messages[category];
+            if (messageList && messageList.length > 0) {
+                const randomIndex = Math.floor(Math.random() * messageList.length);
+                const message = messageList[randomIndex];
+                showMessageModal(message);
+            } else {
+                showAlert("Aww, there are no messages in this jar yet. Please add one!");
+            }
+        }
+        
+        async function initializeAppWithFirebase() {
+            let db;
+            let auth;
+            let userId;
+
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+
+                    if (isEditMode) {
+                        userIdDisplay.textContent = `User ID: ${userId}`;
+                        userIdDisplay.classList.remove('hidden');
+                    }
+
+                    loadingSpinner.classList.add('hidden');
+                    appContainer.classList.remove('hidden');
+
+                    const messageDocRef = doc(db, 'artifacts', appId, 'users', userId, 'messages', 'mood-messages');
+                    onSnapshot(messageDocRef, (doc) => {
+                        if (doc.exists()) {
+                            messages = doc.data();
+                        } else {
+                            messages = { reasons: [], sad: [], missme: [] };
+                            setDoc(messageDocRef, messages);
+                        }
+                        if (isEditMode) {
+                           renderEditMessages();
+                        }
+                    });
+
+                    addMessageButton.addEventListener('click', async () => {
+                        const message = messageTextarea.value.trim();
+                        const category = categorySelect.value;
+                        if (message && category) {
+                            await saveMessage(db, userId, category, message);
+                            messageTextarea.value = '';
+                            showAlert('Message added successfully!');
+                        } else {
+                            showAlert('Please enter a message and select a category.');
+                        }
+                    });
+
+                    editMessageList.addEventListener('click', async (event) => {
+                        if (event.target.classList.contains('remove-message-btn')) {
+                            const category = event.target.dataset.category;
+                            const index = parseInt(event.target.dataset.index, 10);
+                            await removeMessage(db, userId, category, index);
+                            showAlert('Message removed.');
+                        }
+                    });
+                } else {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Error signing in: ", error);
+                        loadingSpinner.innerHTML = `<p class="text-red-500">Error: Unable to sign in. Please try again later.</p>`;
+                    }
+                }
+            });
+        }
+        
+        function initializeMockApp() {
+            loadingSpinner.innerHTML = `<p class="text-gray-600 text-center text-lg font-semibold">Running in local mock mode. Firebase is not configured.</p>`;
+            appContainer.classList.remove('hidden');
+            loadingSpinner.classList.add('hidden');
+        
+            const storedMessages = JSON.parse(localStorage.getItem('mockMessages')) || {
+                reasons: ['You make me happy.', 'You are the most beautiful person I know.'],
+                sad: ['I am sending you a big hug!', 'Remember I am always here for you.'],
+                missme: ['I can\'t wait to see you again.', 'I\'m thinking of you and smiling.']
+            };
+
+            // Set initial messages for mock mode
+            messages = storedMessages;
+
+            const renderMockMessages = () => {
+                editMessageList.innerHTML = '';
+                for (const category in messages) {
+                    if (messages[category].length > 0) {
+                        const categoryHeader = document.createElement('h3');
+                        categoryHeader.className = 'text-xl font-semibold mt-6 mb-2 text-purple-700';
+                        categoryHeader.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+                        editMessageList.appendChild(categoryHeader);
+
+                        messages[category].forEach((msg, index) => {
+                            const messageItem = document.createElement('div');
+                            messageItem.className = 'flex justify-between items-center bg-gray-100 p-3 rounded-md mb-2';
+                            messageItem.innerHTML = `
+                                <p class="text-gray-700 text-sm">${msg}</p>
+                                <button class="remove-message-btn text-red-500 hover:text-red-700 font-bold" data-category="${category}" data-index="${index}">
+                                    &times;
+                                </button>
+                            `;
+                            editMessageList.appendChild(messageItem);
+                        });
+                    }
+                }
+            };
+            
+            renderMockMessages();
+
+            document.getElementById('reasons-btn').addEventListener('click', () => showRandomMessage('reasons'));
+            document.getElementById('sad-btn').addEventListener('click', () => showRandomMessage('sad'));
+            document.getElementById('missme-btn').addEventListener('click', () => showRandomMessage('missme'));
+            document.getElementById('message-modal-close').addEventListener('click', () => document.getElementById('message-modal').classList.add('hidden'));
+
+            document.getElementById('add-message-button').addEventListener('click', () => {
+                const message = document.getElementById('message-textarea').value.trim();
+                const category = document.getElementById('category-select').value;
+                if (message && category) {
+                    if (!messages[category]) messages[category] = [];
+                    messages[category].push(message);
+                    document.getElementById('message-textarea').value = '';
+                    localStorage.setItem('mockMessages', JSON.stringify(messages));
+                    showAlert('Message added to mock data successfully!');
+                    renderMockMessages();
+                } else {
+                    showAlert('Please enter a message and select a category.');
+                }
+            });
+
+            editMessageList.addEventListener('click', (event) => {
+                if (event.target.classList.contains('remove-message-btn')) {
+                    const category = event.target.dataset.category;
+                    const index = parseInt(event.target.dataset.index, 10);
+                    messages[category].splice(index, 1);
+                    localStorage.setItem('mockMessages', JSON.stringify(messages));
+                    showAlert('Message removed from mock data.');
+                    renderMockMessages();
+                }
+            });
+
+            document.getElementById('toggle-view-btn').addEventListener('click', () => {
+                 window.location.href = window.location.pathname;
+            });
+            document.getElementById('toggle-edit-btn').addEventListener('click', () => {
+                 window.location.href = `${window.location.pathname}?edit=true`;
+            });
+        }
+
+        // Initialize the app based on Firebase availability
+        if (Object.keys(firebaseConfig).length === 0) {
+            initializeMockApp();
+        } else {
+            initializeAppWithFirebase();
+        }
+        
+        // Universal event listeners
+        document.getElementById('toggle-view-btn').addEventListener('click', () => {
+             window.location.href = window.location.pathname;
+        });
+        document.getElementById('toggle-edit-btn').addEventListener('click', () => {
+             window.location.href = `${window.location.pathname}?edit=true`;
+        });
+        document.getElementById('reasons-btn').addEventListener('click', () => showRandomMessage('reasons'));
+        document.getElementById('sad-btn').addEventListener('click', () => showRandomMessage('sad'));
+        document.getElementById('missme-btn').addEventListener('click', () => showRandomMessage('missme'));
+    </script>
+</head>
+<body class="bg-pink-50 min-h-screen flex items-center justify-center p-4 text-gray-800">
+
+    <!-- Main Container -->
+    <div id="loading-spinner" class="text-center">
+        <div class="h-12 w-12 animate-spin rounded-full border-4 border-gray-300 border-t-purple-500"></div>
+        <p class="mt-4 text-purple-800">Loading your special jar...</p>
+    </div>
+
+    <div id="app-container" class="hidden w-full max-w-2xl bg-white p-6 md:p-10 rounded-3xl shadow-xl border-t-8 border-purple-500">
+
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-bold font-sans text-purple-800">A Digital Love Jar</h1>
+            <p id="edit-mode-info" class="mt-2 text-sm text-red-500 font-bold hidden">You are in Edit Mode. Your girlfriend will not see this page.</p>
+            <p id="user-id" class="mt-2 text-sm text-gray-500 font-mono hidden"></p>
+            <p class="mt-4 text-md md:text-lg text-gray-600">
+                A special place for a special person.
+            </p>
+        </header>
+
+        <!-- View Mode (for girlfriend) -->
+        <div id="view-mode">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8" id="mood-buttons">
+                <button id="reasons-btn" class="bg-gradient-to-r from-pink-400 to-rose-400 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all">
+                    Get a Reason I Love You
+                </button>
+                <button id="sad-btn" class="bg-gradient-to-r from-purple-400 to-indigo-400 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all">
+                    Open When You're Sad
+                </button>
+                <button id="missme-btn" class="bg-gradient-to-r from-teal-400 to-cyan-400 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all">
+                    Open When You Miss Me
+                </button>
+            </div>
+            
+            <!-- Message Modal -->
+            <div id="message-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 hidden items-center justify-center p-4">
+                <div class="bg-white p-8 rounded-xl shadow-2xl max-w-lg w-full text-center relative">
+                    <button id="message-modal-close" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-2xl font-bold">&times;</button>
+                    <p id="message-modal-text" class="text-2xl font-bold italic text-purple-900"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Edit Mode (for you) -->
+        <div id="edit-mode">
+            <h2 class="text-2xl font-bold text-center mb-4 text-purple-800">Add a New Message</h2>
+            <div class="space-y-4">
+                <div>
+                    <label for="category-select" class="block text-sm font-medium text-gray-700">Choose Jar:</label>
+                    <select id="category-select" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm">
+                        <option value="reasons">Reasons I Love You</option>
+                        <option value="sad">Open When You're Sad</option>
+                        <option value="missme">Open When You Miss Me</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="message-textarea" class="block text-sm font-medium text-gray-700">Your Message:</label>
+                    <textarea id="message-textarea" rows="4" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"></textarea>
+                </div>
+                <button id="add-message-button" class="w-full bg-purple-500 text-white font-bold py-2 px-4 rounded-full shadow-lg hover:bg-purple-600 transition-colors">
+                    Add Message
+                </button>
+            </div>
+            
+            <div id="edit-message-list">
+                <!-- Messages will be rendered here -->
+            </div>
+        </div>
+
+        <!-- Mode Toggle Button -->
+        <footer class="mt-8 text-center">
+            <button id="toggle-edit-btn" class="text-gray-500 text-sm hover:text-purple-600 transition-colors hidden">
+                Toggle Edit Mode
+            </button>
+            <button id="toggle-view-btn" class="text-gray-500 text-sm hover:text-purple-600 transition-colors hidden">
+                Switch to View Mode
+            </button>
+        </footer>
+    </div>
+</body>
+</html>
